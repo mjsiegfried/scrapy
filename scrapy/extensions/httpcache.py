@@ -1,6 +1,7 @@
 from __future__ import print_function
 import os
 import gzip
+import xdelta3
 from six.moves import cPickle as pickle
 from importlib import import_module
 from time import time
@@ -304,18 +305,18 @@ class FilesystemCacheStorage(object):
             'response_url': response.url,
             'timestamp': time(),
         }
-        with self._open(os.path.join(rpath, 'meta'), 'wb') as f:
-            f.write(repr(metadata))
-        with self._open(os.path.join(rpath, 'pickled_meta'), 'wb') as f:
-            pickle.dump(metadata, f, protocol=2)
-        with self._open(os.path.join(rpath, 'response_headers'), 'wb') as f:
-            f.write(headers_dict_to_raw(response.headers))
+        #with self._open(os.path.join(rpath, 'meta'), 'wb') as f:
+        #    f.write(repr(metadata))
+        #with self._open(os.path.join(rpath, 'pickled_meta'), 'wb') as f:
+        #    pickle.dump(metadata, f, protocol=2)
+        #with self._open(os.path.join(rpath, 'response_headers'), 'wb') as f:
+        #    f.write(headers_dict_to_raw(response.headers))
         with self._open(os.path.join(rpath, 'response_body'), 'wb') as f:
             f.write(response.body)
-        with self._open(os.path.join(rpath, 'request_headers'), 'wb') as f:
-            f.write(headers_dict_to_raw(request.headers))
-        with self._open(os.path.join(rpath, 'request_body'), 'wb') as f:
-            f.write(request.body)
+        #with self._open(os.path.join(rpath, 'request_headers'), 'wb') as f:
+        #    f.write(headers_dict_to_raw(request.headers))
+        #with self._open(os.path.join(rpath, 'request_body'), 'wb') as f:
+        #    f.write(request.body)
 
     def _get_request_path(self, spider, request):
         key = request_fingerprint(request)
@@ -335,13 +336,20 @@ class FilesystemCacheStorage(object):
 class DeltaFsCacheStorage(FilesystemCacheStorage):
     def __init__(self, settings):
         super(DeltaFsCacheStorage, self).__init__(settings)
-        self._newbody = 'banana!'
+        source_body = settings['DELTA_SOURCE']
+        with open(os.path.join(self.cachedir, source_body), 'rb') as f:
+            self._source_body = f.read()
 
     def retrieve_response(self, spider, request):
-        return super(DeltaFsCacheStorage, self).retrieve_response(spider, request)
+        cached_response = super(DeltaFsCacheStorage, self).retrieve_response(spider, request)
+        if cached_response:
+            result, original_body = xdelta3.xd3_decode_memory(cached_response.body, self._source_body, 100000)
+            return cached_response.replace(body = original_body)
+        return cached_response
 
     def store_response(self, spider, request, response):
-        fake_response = response.replace(body = self._newbody)
+        result, diff = xdelta3.xd3_encode_memory(response.body, self._source_body, 10000)
+        fake_response = response.replace(body = diff)
         super(DeltaFsCacheStorage, self).store_response(spider, request, fake_response)
 
 class LeveldbCacheStorage(object):
