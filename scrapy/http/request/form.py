@@ -34,8 +34,14 @@ class FormRequest(Request):
 
     @classmethod
     def from_response(cls, response, formname=None, formid=None, formnumber=0, formdata=None,
-                      clickdata=None, dont_click=False, formxpath=None, **kwargs):
+                      clickdata=None, dont_click=False, formxpath=None, formcss=None, **kwargs):
+
         kwargs.setdefault('encoding', response.encoding)
+
+        if formcss is not None:
+            from parsel.csstranslator import HTMLTranslator
+            formxpath = HTMLTranslator().css_to_xpath(formcss)
+
         form = _get_form(response, formname, formid, formnumber, formxpath)
         formdata = _get_inputs(form, formdata, dont_click, clickdata, response)
         url = _get_form_url(form, kwargs.pop('url', None))
@@ -73,7 +79,7 @@ def _get_form(response, formname, formid, formnumber, formxpath):
         f = root.xpath('//form[@id="%s"]' % formid)
         if f:
             return f[0]
-            
+
     # Get form element from xpath, if not found, go up
     if formxpath is not None:
         nodes = root.xpath(formxpath)
@@ -85,7 +91,8 @@ def _get_form(response, formname, formid, formnumber, formxpath):
                 el = el.getparent()
                 if el is None:
                     break
-        raise ValueError('No <form> element found with %s' % formxpath)
+        encoded = formxpath if six.PY3 else formxpath.encode('unicode_escape')
+        raise ValueError('No <form> element found with %s' % encoded)
 
     # If we get here, it means that either formname was None
     # or invalid
@@ -107,8 +114,12 @@ def _get_inputs(form, formdata, dont_click, clickdata, response):
 
     inputs = form.xpath('descendant::textarea'
                         '|descendant::select'
-                        '|descendant::input[@type!="submit" and @type!="image" and @type!="reset"'
-                        'and ((@type!="checkbox" and @type!="radio") or @checked)]')
+                        '|descendant::input[not(@type) or @type['
+                        ' not(re:test(., "^(?:submit|image|reset)$", "i"))'
+                        ' and (../@checked or'
+                        '  not(re:test(., "^(?:checkbox|radio)$", "i")))]]',
+                        namespaces={
+                            "re": "http://exslt.org/regular-expressions"})
     values = [(k, u'' if v is None else v)
               for k, v in (_value(e) for e in inputs)
               if k and k not in formdata]
@@ -151,9 +162,13 @@ def _get_clickable(clickdata, form):
     if the latter is given. If not, it returns the first
     clickable element found
     """
-    clickables = [el for el in form.xpath('descendant::input[@type="submit"]'
-                                          '|descendant::button[@type="submit"]'
-                                          '|descendant::button[not(@type)]')]
+    clickables = [
+        el for el in form.xpath(
+            'descendant::*[(self::input or self::button)'
+            ' and re:test(@type, "^submit$", "i")]'
+            '|descendant::button[not(@type)]',
+            namespaces={"re": "http://exslt.org/regular-expressions"})
+        ]
     if not clickables:
         return
 

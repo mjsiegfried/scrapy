@@ -787,14 +787,16 @@ Default: ``True``
 
 Whether the Meta Refresh middleware will be enabled.
 
-.. setting:: REDIRECT_MAX_METAREFRESH_DELAY
+.. setting:: METAREFRESH_MAXDELAY
 
-REDIRECT_MAX_METAREFRESH_DELAY
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+METAREFRESH_MAXDELAY
+^^^^^^^^^^^^^^^^^^^^
 
 Default: ``100``
 
 The maximum meta-refresh delay (in seconds) to follow the redirection.
+Some sites use meta-refresh for redirecting to a session expired page, so we
+restrict automatic redirection to the maximum delay.
 
 RetryMiddleware
 ---------------
@@ -948,6 +950,18 @@ Default: ``False``
 
 Whether the AjaxCrawlMiddleware will be enabled. You may want to
 enable it for :ref:`broad crawls <topics-broad-crawls>`.
+
+HttpProxyMiddleware settings
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. setting:: HTTPPROXY_AUTH_ENCODING
+
+HTTPPROXY_AUTH_ENCODING
+^^^^^^^^^^^^^^^^^^^^^^^
+
+Default: ``"latin-1"``
+
+The default encoding for proxy authentication on :class:`HttpProxyMiddleware`.
 
 
 .. _DBM: http://en.wikipedia.org/wiki/Dbm

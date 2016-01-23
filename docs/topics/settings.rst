@@ -857,16 +857,6 @@ Defines the maximum times a request can be redirected. After this maximum the
 request's response is returned as is. We used Firefox default value for the
 same task.
 
-.. setting:: REDIRECT_MAX_METAREFRESH_DELAY
-
-REDIRECT_MAX_METAREFRESH_DELAY
-------------------------------
-
-Default: ``100``
-
-Some sites use meta-refresh for redirecting to a session expired page, so we
-restrict automatic redirection to a maximum delay (in seconds)
-
 .. setting:: REDIRECT_PRIORITY_ADJUST
 
 REDIRECT_PRIORITY_ADJUST
@@ -1046,7 +1036,12 @@ TEMPLATES_DIR
 Default: ``templates`` dir inside scrapy module
 
 The directory where to look for templates when creating new projects with
-:command:`startproject` command.
+:command:`startproject` command and new spiders with :command:`genspider` 
+command.
+
+The project name must not conflict with the name of custom files or directories
+in the ``project`` subdirectory.
+
 
 .. setting:: URLLENGTH_LIMIT
 
