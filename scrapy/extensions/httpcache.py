@@ -14,6 +14,8 @@ from scrapy.utils.project import data_path
 from scrapy.utils.httpobj import urlparse_cached
 from scrapy.utils.python import to_bytes, to_unicode
 from scrapy.utils.misc import load_object
+from collections import OrderedDict
+import json
 
 
 class DummyPolicy(object):
@@ -335,107 +337,125 @@ class FilesystemCacheStorage(object):
         with self._open(metapath, 'rb') as f:
             return pickle.load(f)
 
-class DeltaFsCacheStorage(FilesystemCacheStorage):
-    # TODO - store delta in a data structure along with original size so we can
-    # use a more precise buffer for xdelta3, and pickle it before storing
+
+class LeveldbDeltaCacheStorage(object):
+
     def __init__(self, settings):
+        import leveldb
         import xdelta3
-        super(DeltaFsCacheStorage, self).__init__(settings)
-        source_body = settings['DELTA_SOURCE']
-        with open(os.path.join(self.cachedir, source_body), 'rb') as f:
-            self._source_body = f.read()
-
-    def retrieve_response(self, spider, request):
-        cached_response = super(DeltaFsCacheStorage, self).retrieve_response(spider, request)
-        if cached_response:
-            # 1MB buffer for restored body
-            result, original_body = xdelta3.xd3_decode_memory(cached_response.body, self._source_body, 1048576)
-            return cached_response.replace(body = original_body)
-        return cached_response
-
-    def store_response(self, spider, request, response):
-        # Use the larger of the two files as the potential max delta size
-        max_delta_size = max(len(response.body), len(self._source_body))
-        result, delta = xdelta3.xd3_encode_memory(response.body, self._source_body, max_delta_size)
-        delta_response = response.replace(body = delta)
-        super(DeltaFsCacheStorage, self).store_response(spider, request, delta_response)
-
-class DeltaCacheStorage(object):
-    def __init__(self, settings):
-        import xdelta3
-        if not settings.get('DELTA_STORAGE'):
-            raise NotConfigured
+        self._leveldb = leveldb
         self._xdelta3 = xdelta3
-        self.storage = load_object(settings['DELTA_STORAGE'])(settings)
-        self.cachedir = data_path(settings['HTTPCACHE_DIR'])
-        # NOTE - Leave out the headers for now: Headers is a CaselessDict subclass
-        # (see scrapy.http.Headers), and we'll need to handle encoding and decoding
-        # deltas for contents.
-        self.to_delta = ['body']
+        self.cachedir = data_path(settings['HTTPCACHE_DIR'], createdir=True)
+        self.expiration_secs = settings.getint('HTTPCACHE_EXPIRATION_SECS')
+        self.db = None
         self._old_source_response = None
         self._new_source_response = None
+        # List of properties from request and response objects to store in cache
+        self.request_to_cache = ['url']
+        self.response_to_cache = ['status', 'headers', 'body']
 
     def open_spider(self, spider):
         # Set up the old source response if it exists.
-        source_path = os.path.join(self.cachedir, '%s.delta_cache' % spider.name)
+        source_path = os.path.join(self.cachedir, '%s.delta_source' % spider.name)
         if os.path.exists(source_path):
             with open(source_path, 'rb') as f:
-                self._old_source_response = pickle.load(f)
-        self.storage.open_spider(spider)
+                self._old_source_response = f.read()
+        dbpath = os.path.join(self.cachedir, '%s.leveldb' % spider.name)
+        self.db = self._leveldb.LevelDB(dbpath)
 
     def close_spider(self, spider):
         # Store the new source response if it exists. If all cache lookups are
         # hits, self._new_source_response will be None, so we need to check if
         # actually exists before overwriting the old source response.
-        source_path = os.path.join(self.cachedir, '%s.delta_cache' % spider.name)
         if self._new_source_response:
+            source_path = os.path.join(self.cachedir, '%s.delta_source' % spider.name)
             with open(source_path, 'wb') as f:
-                pickle.dump(self._new_source_response, f, protocol=2)
-        self.storage.close_spider(spider)
+                f.write(self._new_source_response)
+        # Do compactation each time to save space and also recreate files to
+        # avoid them being removed in storages with timestamp-based autoremoval.
+        self.db.CompactRange()
+        del self.db
 
     def retrieve_response(self, spider, request):
         # We only want to retrieve the cached response if we have some
         # source response to use for decoding. Otherwise things would break
         # if we tried to use DeltaStorage with an existing non-delta cache.
-        cached_response = None
+        delta_response = None
         if self._old_source_response:
-            cached_response = self.storage.retrieve_response(spider, request)
-        if cached_response:
-            return self._decode_response(cached_response)
-        return cached_response
+            delta_response = self._read_data(spider, request)
+        if delta_response is None:
+            return # not cached
+        serial_response = self._decode_response(delta_response)
+        data = self._deserialize(serial_response)
+        url = data['url']
+        status = data['status']
+        headers = Headers(data['headers'])
+        body = data['body']
+        respcls = responsetypes.from_args(headers=headers, url=url)
+        response = respcls(url=url, headers=headers, status=status, body=body)
+        return response
 
     def store_response(self, spider, request, response):
         # For now, use the first response we get as the new source
         # TODO - how can we limit this check to only the first time
         # store_response is called?
-        # Ugly, but it works for testing.
+        serial_response = self._serialize(request, response)
         if not self._new_source_response:
-            self._new_source_response = response.copy()
-        delta_response = self._encode_response(response)
-        self.storage.store_response(spider, request, delta_response)
+            self._new_source_response = serial_response
+        delta_response = self._encode_response(serial_response)
+        key = self._request_key(request)
+        batch = self._leveldb.WriteBatch()
+        batch.Put(key + b'_data', delta_response)
+        batch.Put(key + b'_time', to_bytes(str(time())))
+        self.db.Write(batch)
 
-    def _encode_response(self, response):
-        delta_contents = {}
-        for x in self.to_delta:
-            # Encode using the new source response
-            source = getattr(self._new_source_response, x)
-            target = getattr(response, x)
-            buf_size = max(len(target), len(source)) * 2
-            result, delta_contents[x] = self._xdelta3.xd3_encode_memory(target, source, buf_size)
-        return response.replace(**delta_contents)
+    def _encode_response(self, serial_response):
+        source = self._new_source_response
+        target = serial_response
+        buf_size = max(len(target), len(source)) * 2
+        result, delta_contents = self._xdelta3.xd3_encode_memory(target, source, buf_size)
+        return delta_contents
 
-    def _decode_response(self, response):
-        restored_contents = {}
-        for x in self.to_delta:
-            # Decode using the old source response
-            source = getattr(self._old_source_response, x)
-            delta = getattr(response, x)
-            # Use 1MB for buffer size for now.
-            # TODO - come up with a way to estimate buffer size, len(source) +
-            # len(delta) doesn't work well.
-            buf_size = 1048576
-            result, restored_contents[x] = self._xdelta3.xd3_decode_memory(delta, source, buf_size)
-        return response.replace(**restored_contents)
+    def _decode_response(self, delta_response):
+        source = self._old_source_response
+        delta = delta_response
+        # TODO - come up with a way to estimate buffer size
+        buf_size = 1048576
+        result, restored_contents = self._xdelta3.xd3_decode_memory(delta, source, buf_size)
+        return restored_contents
+
+    def _serialize(self, request, response):
+        dict_response = OrderedDict()
+        for item in self.request_to_cache:
+            dict_response[item] = getattr(request, item)
+        for item in self.response_to_cache:
+            dict_response[item] = getattr(response, item)
+        return json.dumps(dict_response, encoding='utf-8', indent=2, separators=(',', ': '))
+
+    def _deserialize(self, serial_response):
+        dict_response = json.loads(serial_response, encoding='utf-8', object_pairs_hook=OrderedDict)
+        dict_response['url'] = to_bytes(dict_response['url'], encoding='utf-8')
+        dict_response['body'] = to_bytes(dict_response['body'], encoding='utf-8')
+        return dict_response
+
+    def _read_data(self, spider, request):
+        key = self._request_key(request)
+        try:
+            ts = self.db.Get(key + b'_time')
+        except KeyError:
+            return  # not found or invalid entry
+        if 0 < self.expiration_secs < time() - float(ts):
+            return  # expired
+        try:
+            data = self.db.Get(key + b'_data')
+        except KeyError:
+            return  # invalid entry
+        else:
+            return data
+
+    def _request_key(self, request):
+        return to_bytes(request_fingerprint(request))
+
 
 class LeveldbCacheStorage(object):
 
