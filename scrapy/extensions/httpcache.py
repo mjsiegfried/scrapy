@@ -339,6 +339,7 @@ class FilesystemCacheStorage(object):
 
 
 class LeveldbDeltaCacheStorage(object):
+
     def __init__(self, settings):
         import leveldb
         import xdelta3
