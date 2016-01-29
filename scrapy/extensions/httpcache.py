@@ -13,7 +13,7 @@ from scrapy.utils.request import request_fingerprint
 from scrapy.utils.project import data_path
 from scrapy.utils.httpobj import urlparse_cached
 from scrapy.utils.python import to_bytes, to_unicode
-from scrapy.utils.misc import load_object
+from collections import OrderedDict
 
 
 class DummyPolicy(object):
@@ -422,7 +422,10 @@ class LeveldbDeltaCacheStorage(object):
         return restored_contents
 
     def _serialize(self, request, response):
-        return pickle.dumps({k: getattr(response, k) for k in self.response_to_cache}, 2)
+        dict_response = OrderedDict()
+        for k in self.response_to_cache:
+            dict_response[k] = getattr(response, k)
+        return pickle.dumps(dict_response, 2)
 
     def _deserialize(self, serial_response):
         return pickle.loads(serial_response)
