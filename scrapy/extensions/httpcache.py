@@ -15,6 +15,9 @@ from scrapy.utils.httpobj import urlparse_cached
 from scrapy.utils.python import to_bytes, to_unicode
 from collections import OrderedDict
 
+# Debug stuff
+import pprint
+
 
 class DummyPolicy(object):
 
@@ -347,27 +350,31 @@ class LeveldbDeltaCacheStorage(object):
         self.expiration_secs = settings.getint('HTTPCACHE_EXPIRATION_SECS')
         self.db = None
         self._old_source_response = None
+        # Holding the response and request of the source
         self._new_source_response = None
+        self._new_source_request = None
+        # Dictionary of sources with each source having a set of target fingerprints
+        self.sources = None
         # List of properties from request and response objects to store in cache
         self.response_to_cache = ['status', 'url', 'headers', 'body']
 
     def open_spider(self, spider):
         # Set up the old source response if it exists.
-        source_path = os.path.join(self.cachedir, '%s.delta_source' % spider.name)
-        if os.path.exists(source_path):
-            with open(source_path, 'rb') as f:
-                self._old_source_response = f.read()
         dbpath = os.path.join(self.cachedir, '%s.leveldb' % spider.name)
         self.db = self._leveldb.LevelDB(dbpath)
+        key = spider.name
+        self._old_source_response = self.db.Get(key + b'_data')
+        
 
     def close_spider(self, spider):
         # Store the new source response if it exists. If all cache lookups are
         # hits, self._new_source_response will be None, so we need to check if
         # actually exists before overwriting the old source response.
         if self._new_source_response:
-            source_path = os.path.join(self.cachedir, '%s.delta_source' % spider.name)
-            with open(source_path, 'wb') as f:
-                f.write(self._new_source_response)
+            key = spider.name
+            batch = self._leveldb.WriteBatch()
+            batch.Put(key + b'_data', self._new_source_response)
+            self.db.Write(batch)
         # Do compactation each time to save space and also recreate files to
         # avoid them being removed in storages with timestamp-based autoremoval.
         self.db.CompactRange()
@@ -383,6 +390,10 @@ class LeveldbDeltaCacheStorage(object):
         if delta_response is None:
             return # not cached
         serial_response = self._decode_response(delta_response)
+        # Debug printing###################
+        #pp = pprint.PrettyPrinter(indent=4)
+        #pp.pprint(serial_response)
+        ###################################
         data = self._deserialize(serial_response)
         url = data['url']
         status = data['status']
@@ -397,13 +408,25 @@ class LeveldbDeltaCacheStorage(object):
         # TODO - how can we limit this check to only the first time
         # store_response is called?
         serial_response = self._serialize(request, response)
+        # Debug printing #################
+        #pp = pprint.PrettyPrinter(indent=4)
+        #pp.pprint(serial_response)
+        ##################################
         if not self._new_source_response:
             self._new_source_response = serial_response
+            self._new_source_request = request
+            master_key = self._request_key(request)
+            self.sources = dict()
+            self.sources[master_key] = set()
+        master_key = self._request_key(self._new_source_request)
         delta_response = self._encode_response(serial_response)
-        key = self._request_key(request)
+        target_key = self._request_key(request)
+        self.sources[master_key].add(target_key)
         batch = self._leveldb.WriteBatch()
-        batch.Put(key + b'_data', delta_response)
-        batch.Put(key + b'_time', to_bytes(str(time())))
+        batch.Put(target_key + b'_data', delta_response)
+        batch.Put(target_key + b'_time', to_bytes(str(time())))
+        #batch.Put(master_key + b'_data', pickle.dumps(self.sources, 2))
+        #batch.Put(master_key + b'_time', to_bytes(str(time())))
         self.db.Write(batch)
 
     def _encode_response(self, serial_response):
@@ -444,6 +467,31 @@ class LeveldbDeltaCacheStorage(object):
             return  # invalid entry
         else:
             return data
+
+    def _read_db_data(self, spider, request):
+        master_key = self._request_key(self._new_source_request)
+        target_key = self._request_key(request)
+        try:
+            ts = self.db.Get(master_key + b'_time')
+        except KeyError:
+            return  # not found or invalid entry
+        if 0 < self.expiration_secs < time() - float(ts):
+            return  # expired
+        try:
+            source_dict = self.db.Get(master_key + b'_data')
+            sources = pickle.loads(source_dict)
+            # When we have multiple sources, we search through the sources also
+            data = None
+            for item in sources[master_key]:
+                if item == target_key:
+                    data = item
+            if data is None:
+                return  # this shouldn't happen, but just in case
+            delta_response = self.db.Get(data + b'_data')
+        except KeyError:
+            return  # invalid entry
+        else:
+            return delta_response
 
     def _request_key(self, request):
         return to_bytes(request_fingerprint(request))
