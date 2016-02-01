@@ -1,6 +1,13 @@
 from os.path import dirname, join
 from setuptools import setup, find_packages
 
+######################
+# Dirty hack to let tox work in Vagrant w/ Virtualbox shared folders.
+# Has the effect of disabling hardlinks.
+# DO NOT SUBMIT UPSTREAM
+import os
+del os.link
+######################
 
 with open(join(dirname(__file__), 'scrapy/VERSION'), 'rb') as f:
     version = f.read().decode('ascii').strip()
