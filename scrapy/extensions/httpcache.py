@@ -15,10 +15,6 @@ from scrapy.utils.httpobj import urlparse_cached
 from scrapy.utils.python import to_bytes, to_unicode
 from collections import OrderedDict
 
-# Debug stuff
-import pprint
-
-
 class DummyPolicy(object):
 
     def __init__(self, settings):
@@ -364,7 +360,6 @@ class LeveldbDeltaCacheStorage(object):
         self.db = self._leveldb.LevelDB(dbpath)
         key = spider.name
         self._old_source_response = self.db.Get(key + b'_data')
-        
 
     def close_spider(self, spider):
         # Store the new source response if it exists. If all cache lookups are
@@ -389,12 +384,8 @@ class LeveldbDeltaCacheStorage(object):
         if self._old_source_response:
             delta_response, original_length = self._read_delta(spider, request)
         if delta_response is None or original_length is None:
-            return # not cached
+            return  # not cached
         serial_response = self._decode_response(delta_response, original_length)
-        # Debug printing###################
-        #pp = pprint.PrettyPrinter(indent=4)
-        #pp.pprint(serial_response)
-        ###################################
         data = self._deserialize(serial_response)
         url = data['url']
         status = data['status']
@@ -409,10 +400,6 @@ class LeveldbDeltaCacheStorage(object):
         # TODO - how can we limit this check to only the first time
         # store_response is called?
         serial_response = self._serialize(request, response)
-        # Debug printing #################
-        #pp = pprint.PrettyPrinter(indent=4)
-        #pp.pprint(serial_response)
-        ##################################
         if not self._new_source_response:
             self._new_source_response = serial_response
             self._new_source_request = request
@@ -427,8 +414,6 @@ class LeveldbDeltaCacheStorage(object):
         batch.Put(target_key + b'_data', delta_response)
         batch.Put(target_key + b'_time', to_bytes(str(time())))
         batch.Put(target_key + b'_length', to_bytes(str(original_length)))
-        #batch.Put(master_key + b'_data', pickle.dumps(self.sources, 2))
-        #batch.Put(master_key + b'_time', to_bytes(str(time())))
         self.db.Write(batch)
 
     def _encode_response(self, serial_response):
