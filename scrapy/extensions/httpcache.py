@@ -340,9 +340,9 @@ class DeltaLeveldbCacheStorage(object):
 
     def __init__(self, settings):
         import leveldb
-        import xdelta3
+        import bsdiff4
         self._leveldb = leveldb
-        self._xdelta3 = xdelta3
+        self._bsdiff = bsdiff4
         self.cachedir = data_path(settings['HTTPCACHE_DIR'], createdir=True)
         self.expiration_secs = settings.getint('HTTPCACHE_EXPIRATION_SECS')
         self.db = None
@@ -362,14 +362,13 @@ class DeltaLeveldbCacheStorage(object):
 
     def retrieve_response(self, spider, request):
         domain = self._parse_domain_from_url(spider, request.url)
-        sources = self._read_data(spider, domain)
+        sources = self._read_data(spider, key_to_use=domain)
         # Explicitly declare these as None, since they're used for controlling logic.
         delta_response = None
-        original_length = None
         serial_response = None
-        delta_response, original_length = self._read_delta(spider, request)
+        delta_response = self._read_data(spider, request_to_use=request)
         # Check if we have some sources to look through and if we have a previous delta
-        if sources and delta_response and original_length:
+        if sources and delta_response:
             sources = pickle.loads(sources)
             # Grab our key
             target_key = self._request_key(request)
@@ -377,8 +376,8 @@ class DeltaLeveldbCacheStorage(object):
             for source in sources.keys():
                 # If we found our request's key in our sources, decode it and stop looking.
                 if target_key in sources[source]:
-                    serial_source = self._read_data(spider, source)
-                    serial_response = self._decode_response(delta_response, serial_source, original_length)
+                    serial_source = self._read_data(spider, key_to_use=source)
+                    serial_response = self._decode_response(delta_response, serial_source)
                     break
         # If this condition is true, we didn't find a cached response and return
         if not serial_response:
@@ -399,7 +398,7 @@ class DeltaLeveldbCacheStorage(object):
         original_length = None
         domain = self._parse_domain_from_url(spider, request.url)
         # get the pickled data structure of sources from the db
-        sources = self._read_data(spider, domain)
+        sources = self._read_data(spider, key_to_use=domain)
         # if we have sources, grab a source and delta against it:
         if sources:
             sources = pickle.loads(sources)
@@ -408,9 +407,9 @@ class DeltaLeveldbCacheStorage(object):
             # with the source
             if target_key in sources:
                 # Grab the original
-                source_response = self._read_data(spider, target_key)
+                source_response = self._read_data(spider, key_to_use=target_key)
                 # Check if the new source is different from the old
-                delta, junk = self._encode_response(target_response, source_response)
+                delta = self._encode_response(target_response, source_response)
                 # If the length of the delta is non-zero, do the reencode.
                 if len(delta) != 0:
                     self._recompute_deltas(target_response, source_response, sources[target_key])
@@ -420,9 +419,9 @@ class DeltaLeveldbCacheStorage(object):
                 source_key = self._select_source(target_response, sources)
                 # get the source from the db directly. We don't need an associated
                 # request because we already have the fingerprint/key.
-                source_response = self._read_data(spider, source_key)
+                source_response = self._read_data(spider, key_to_use=source_key)
                 # overwrite target_response ref with the delta
-                target_response, original_length = self._encode_response(target_response, source_response)
+                target_response = self._encode_response(target_response, source_response)
                 # add the target's key to the source's set
                 sources[source_key].add(target_key)
         # otherwise create a new dictionary for our sources and use the current
@@ -440,8 +439,6 @@ class DeltaLeveldbCacheStorage(object):
         batch.Put(target_key + b'_time', to_bytes(str(time())))
         batch.Put(domain + b'_data', pickle.dumps(sources, protocol=2))
         batch.Put(domain + b'_time', to_bytes(str(time())))
-        if original_length:
-            batch.Put(target_key + b'_length', to_bytes(str(original_length)))
         self.db.Write(batch)
 
     # Placeholder for now
@@ -466,12 +463,11 @@ class DeltaLeveldbCacheStorage(object):
         print('Chopper Dave says uh-oh, shouldn\'t hit this yet!\n')
 
     def _encode_response(self, target, source):
-        buf_size = max(len(target), len(source))
-        result, delta_contents = self._xdelta3.xd3_encode_memory(target, source, buf_size)
-        return delta_contents, len(target)
+        delta_contents = self._bsdiff.diff(source, target)
+        return delta_contents
 
-    def _decode_response(self, delta, source, buf_size):
-        result, restored_contents = self._xdelta3.xd3_decode_memory(delta, source, buf_size)
+    def _decode_response(self, delta, source):
+        restored_contents = self._bsdiff.patch(source, delta)
         return restored_contents
 
     def _serialize(self, request, response):
@@ -485,7 +481,11 @@ class DeltaLeveldbCacheStorage(object):
 
     # We can use this when we already have a key ahead of time,
     # i.e. grabbing sources by IP/domain, grabbing a source response.
-    def _read_data(self, spider, key):
+    def _read_data(self, spider, request_to_use=None, key_to_use=None):
+        if key_to_use:
+            key = key_to_use
+        else:
+            key = self._request_key(request_to_use)
         try:
             ts = self.db.Get(key + b'_time')
         except KeyError:
@@ -498,27 +498,6 @@ class DeltaLeveldbCacheStorage(object):
             return  # invalid entry
         else:
             return data
-
-    def _read_delta(self, spider, request):
-        key = self._request_key(request)
-        try:
-            ts = self.db.Get(key + b'_time')
-        except KeyError:
-            return None, None  # not found or invalid entry
-        if 0 < self.expiration_secs < time() - float(ts):
-            return None, None  # expired
-        try:
-            data = self.db.Get(key + b'_data')
-        except KeyError:
-            return None, None  # invalid entry
-        try:
-            length = int(self.db.Get(key + b'_length'))
-        except KeyError:
-            return None, None  # invalid entry
-        except ValueError:
-            return None, None  # invalid entry
-        else:
-            return data, length
 
     def _request_key(self, request):
         return to_bytes(request_fingerprint(request))
