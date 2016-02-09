@@ -14,6 +14,7 @@ from scrapy.utils.project import data_path
 from scrapy.utils.httpobj import urlparse_cached
 from scrapy.utils.python import to_bytes, to_unicode
 from collections import OrderedDict
+from six.moves.urllib.parse import urlparse
 
 class DummyPolicy(object):
 
