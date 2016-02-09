@@ -389,8 +389,6 @@ class DeltaLeveldbCacheStorage(object):
         body = data['body']
         respcls = responsetypes.from_args(headers=headers, url=url)
         response = respcls(url=url, headers=headers, status=status, body=body)
-        print(response.body)
-        print('\n')
         return response
 
     def store_response(self, spider, request, response):
