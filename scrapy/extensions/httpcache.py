@@ -14,7 +14,6 @@ from scrapy.utils.project import data_path
 from scrapy.utils.httpobj import urlparse_cached
 from scrapy.utils.python import to_bytes, to_unicode
 from collections import OrderedDict
-from six.moves.urllib.parse import urlparse
 
 class DummyPolicy(object):
 
@@ -395,7 +394,7 @@ class DeltaLeveldbCacheStorage(object):
         target_response = self._serialize(response)
         # use this to control if we write a length or not
         original_length = None
-        domain = self._parse_domain_from_url(spider, request.url)
+        domain = self._parse_domain_from_url(spider, request)
         # get the pickled data structure of sources from the db
         sources = self._read_data(key_to_use=domain, ignore_time=True)
         # if we have sources, grab a source and delta against it:
@@ -438,12 +437,8 @@ class DeltaLeveldbCacheStorage(object):
         self.db.Write(batch)
 
     # Placeholder for now
-    def _parse_domain_from_url(self, spider, url):
-        parsed_url = urlparse(url)
-        if parsed_url.netloc:
-            return parsed_url.netloc
-        else:
-            return spider.name
+    def _parse_domain_from_url(self, spider, request):
+        return urlparse_cached(request).hostname or spider.name
 
     # Placeholder for now
     def _select_source(self, target, sources):
