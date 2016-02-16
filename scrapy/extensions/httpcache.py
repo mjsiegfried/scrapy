@@ -360,7 +360,7 @@ class DeltaLeveldbCacheStorage(object):
         del self.db
 
     def retrieve_response(self, spider, request):
-        domain = self._parse_domain_from_url(spider, request.url)
+        domain = self._parse_domain_from_url(spider, request)
         sources = self._read_data(key_to_use=domain)
         # Explicitly declare these as None, since they're used for controlling logic.
         delta_response = None
