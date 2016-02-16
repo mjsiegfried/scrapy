@@ -83,8 +83,8 @@ class RobotsTxtMiddleware(object):
     def _parse_robots(self, response, netloc):
         rp = robotparser.RobotFileParser(response.url)
         body = ''
-        if hasattr(response, 'body_as_unicode'):
-            body = response.body_as_unicode()
+        if hasattr(response, 'text'):
+            body = response.text
         else: # last effort try
             try:
                 body = response.body.decode('utf-8')
@@ -101,4 +101,6 @@ class RobotsTxtMiddleware(object):
         rp_dfd.callback(rp)
 
     def _robots_error(self, failure, netloc):
-        self._parsers.pop(netloc).callback(None)
+        rp_dfd = self._parsers[netloc]
+        self._parsers[netloc] = None
+        rp_dfd.callback(None)
