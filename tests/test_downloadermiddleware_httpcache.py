@@ -154,6 +154,12 @@ class FilesystemStorageGzipTest(FilesystemStorageTest):
         new_settings.setdefault('HTTPCACHE_GZIP', True)
         return super(FilesystemStorageTest, self)._get_settings(**new_settings)
 
+class DeltaLeveldbStorageTest(DefaultStorageTest):
+
+    pytest.importorskip('leveldb')
+    pytest.importorskip('bsdiff4')
+    storage_class = 'scrapy.extensions.httpcache.DeltaLeveldbCacheStorage'
+
 class LeveldbStorageTest(DefaultStorageTest):
 
     pytest.importorskip('leveldb')
