@@ -14,7 +14,6 @@ from scrapy.utils.project import data_path
 from scrapy.utils.httpobj import urlparse_cached
 from scrapy.utils.python import to_bytes, to_unicode
 from collections import OrderedDict
-from six.moves.urllib.parse import urlparse
 
 class DummyPolicy(object):
 
@@ -444,11 +443,7 @@ class DeltaLeveldbCacheStorage(object):
 
     # Placeholder for now
     def _parse_domain_from_url(self, spider, url):
-        parsed_url = urlparse(url)
-        if parsed_url.netloc:
-            return parsed_url.netloc
-        else:
-            return spider.name
+        return urlparse_cached(url).hostname or spider.name
 
     # Placeholder for now
     def _select_source(self, target, sources):
