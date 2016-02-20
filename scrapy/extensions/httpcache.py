@@ -1,6 +1,9 @@
 from __future__ import print_function
 import os
 import gzip
+import zlib
+from io import BytesIO
+from scrapy.utils.gz import gunzip, is_gzipped
 from six.moves import cPickle as pickle
 from importlib import import_module
 from time import time
@@ -334,7 +337,6 @@ class FilesystemCacheStorage(object):
         with self._open(metapath, 'rb') as f:
             return pickle.load(f)
 
-
 class DeltaLeveldbCacheStorage(object):
 
     def __init__(self, settings):
@@ -374,7 +376,7 @@ class DeltaLeveldbCacheStorage(object):
             target_key = self._request_key(request)
             # if our key is a source, no need to look for a source -- full serialized response is stored
             if target_key in sources:
-                serial_response = delta_response
+                serial_response = delta_response 
             else:
                 # Iterate over every source in our sources
                 for source in sources.keys():
@@ -387,10 +389,12 @@ class DeltaLeveldbCacheStorage(object):
             return
         data = self._deserialize(serial_response)
         response = self._reconstruct_response(data)
+        response = self._recompress(response)
         return response
 
     def store_response(self, spider, request, response):
         target_key = self._request_key(request)
+        response = self._decompress(response)
         target_response = self._serialize(response)
         # use this to control if we write a length or not
         original_length = None
@@ -436,12 +440,15 @@ class DeltaLeveldbCacheStorage(object):
         batch.Put(domain + b'_time', to_bytes(str(time())))
         self.db.Write(batch)
 
+    # Placeholder for now
     def _parse_domain_from_url(self, spider, request):
         return urlparse_cached(request).hostname or spider.name
 
+    # Placeholder for now
     def _select_source(self, target, sources):
         return sources.keys()[0]
 
+    # Placeholder for now
     def _recompute_deltas(self, new_source, old_source, target_set):
         for target_key in target_set:
             # Get old response from the db
@@ -480,6 +487,35 @@ class DeltaLeveldbCacheStorage(object):
 
     def _deserialize(self, serial_response):
         return pickle.loads(serial_response)
+
+    def _recompress(self, response):
+        content_encoding = response.headers.getlist('Content-Encoding')
+        if content_encoding and not is_gzipped(response):
+            encoding = content_encoding[-1].lower()
+            if encoding == b'gzip' or encoding == b'x-gzip':
+                buffer = BytesIO()
+                with gzip.GzipFile(mode='wb', fileobj=buffer) as f:
+                    f.write(response.body)
+                    f.close()
+                encoded_body = buffer.getvalue()
+            if encoding == b'deflate':
+                encoded_body = zlib.compress(response.body)
+            response = response.replace(**{'body': encoded_body})
+        return response
+
+    def _decompress(self, response):
+        content_encoding = response.headers.getlist('Content-Encoding')
+        if content_encoding and not is_gzipped(response):
+            encoding = content_encoding[-1].lower()
+            if encoding == b'gzip' or encoding == b'x-gzip':
+                decoded_body = gunzip(response.body)
+            if encoding == b'deflate':
+                try:
+                    decoded_body = zlib.decompress(response.body)
+                except zlib.error:
+                    decoded_body = zlib.decompress(response.body, -15)
+            response = response.replace(**{'body': decoded_body})
+        return response
 
     # We can use this when we already have a key ahead of time,
     # i.e. grabbing sources by IP/domain, grabbing a source response.
